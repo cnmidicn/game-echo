@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planUpgrade, towerStats, WAVES, ENEMY_TYPES, waveSummary, resultFor, TOTAL_ENEMIES, comboAfterKill, waveReward, COMBO_WINDOW, forestForRound, FORESTS, planSupport, applyDamage, SUPPORT_COOLDOWN, BEAT_SECONDS } from '../dist/rules.mjs';
+import { planUpgrade, towerStats, WAVES, ENEMY_TYPES, waveSummary, resultFor, TOTAL_ENEMIES, comboAfterKill, waveReward, COMBO_WINDOW, forestForRound, FORESTS, planSupport, applyDamage, SUPPORT_COOLDOWN, BEAT_SECONDS, creditEchoes, suggestUpgrade, canResonate, recordForestStars } from '../dist/rules.mjs';
 
 test('an unaffordable upgrade preserves level and all currency', () => {
   assert.deepEqual(planUpgrade(1, 1), { allowed: false, reason: 'funds', balance: 1, level: 1, cost: 2 });
@@ -92,4 +92,35 @@ test('overkill and a second attacker cannot award the same kill twice', () => {
   assert.deepEqual(first, {hp:0,applied:10,killed:true});
   assert.deepEqual(applyDamage(first.hp,25), {hp:0,applied:0,killed:false});
   assert.deepEqual(applyDamage(25,-5), {hp:25,applied:0,killed:false});
+});
+
+test('echo credits preserve the full value of a partly full reward', () => {
+  assert.deepEqual(creditEchoes(8,3), {balance:9,received:1,overflow:2,points:100});
+  assert.deepEqual(creditEchoes(9,3), {balance:9,received:0,overflow:3,points:150});
+  assert.deepEqual(creditEchoes(0,3), {balance:3,received:3,overflow:0,points:0});
+});
+test('invalid credits cannot silently create or remove echoes', () => {
+  assert.throws(() => creditEchoes(10,1), RangeError);
+  assert.throws(() => creditEchoes(3,-1), RangeError);
+  assert.throws(() => creditEchoes(3,1.5), RangeError);
+});
+test('upgrade guidance chooses only one affordable, non-maximal tower', () => {
+  const pads=[{index:6,level:2},{index:7,level:1},{index:4,level:1},{index:5,level:3}];
+  assert.equal(suggestUpgrade(pads,1),null);
+  assert.equal(suggestUpgrade(pads,2),7);
+  assert.equal(suggestUpgrade(pads,9),7);
+  assert.equal(suggestUpgrade([{index:6,level:3}],9),null);
+});
+test('resonance is unavailable before six hits and can activate only once per wave', () => {
+  assert.equal(canResonate(5,0,1),false);
+  assert.equal(canResonate(6,0,1),true);
+  assert.equal(canResonate(10,1,1),false);
+  assert.equal(canResonate(6,1,2),true);
+  assert.equal(canResonate(6,0,0),false);
+});
+test('forest stars never lose a previous best or accept unknown forests', () => {
+  assert.deepEqual(recordForestStars({mist:3},'mist',1),{mist:3,firefly:0,amber:0});
+  assert.deepEqual(recordForestStars({mist:2},'amber',3),{mist:2,firefly:0,amber:3});
+  assert.deepEqual(recordForestStars(null,'unknown',3),{mist:0,firefly:0,amber:0});
+  assert.deepEqual(recordForestStars({mist:99,firefly:'3'},'amber',0),{mist:3,firefly:0,amber:0});
 });

@@ -83,3 +83,30 @@ export function applyDamage(hp, damage) {
   const applied = Math.min(Math.max(0, hp), Math.max(0, damage));
   return { hp:Math.max(0, hp - applied), applied, killed:hp > 0 && hp - applied <= 0 };
 }
+
+export const ECHO_CAPACITY = 9;
+export const OVERFLOW_POINTS = 50;
+export const RESONANCE_DAMAGE = 18;
+export function creditEchoes(balance, requested) {
+  if (!Number.isInteger(balance) || balance < 0 || balance > ECHO_CAPACITY || !Number.isInteger(requested) || requested < 0) throw new RangeError('Invalid echo credit');
+  const received = Math.min(requested, ECHO_CAPACITY - balance), overflow = requested - received;
+  return { balance:balance + received, received, overflow, points:overflow * OVERFLOW_POINTS };
+}
+export function suggestUpgrade(pads, balance) {
+  const order = [...STARTER_PADS, 5, 3, 2, 1, 0];
+  const eligible = pads.filter(p => p.level > 0 && p.level < 3 && balance >= p.level + 1);
+  eligible.sort((a,b) => a.level - b.level || order.indexOf(a.index) - order.indexOf(b.index));
+  return eligible[0]?.index ?? null;
+}
+export function canResonate(combo, lastWave, currentWave) {
+  return combo >= 6 && currentWave >= 1 && currentWave <= WAVES.length && lastWave !== currentWave;
+}
+export function recordForestStars(previous, forestId, stars) {
+  const record = {};
+  for (const forest of FORESTS) {
+    const value = previous && typeof previous === 'object' ? previous[forest.id] : 0;
+    record[forest.id] = Number.isInteger(value) ? Math.max(0, Math.min(3, value)) : 0;
+  }
+  if (FORESTS.some(f => f.id === forestId) && Number.isInteger(stars)) record[forestId] = Math.max(record[forestId], Math.max(0, Math.min(3, stars)));
+  return record;
+}

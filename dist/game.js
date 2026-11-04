@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import { BEAT_SECONDS, STARTER_PADS, FIRST_COUNTDOWN, BREAK_SECONDS, COMBO_WINDOW, TOTAL_ENEMIES, comboAfterKill, waveReward, ENEMY_TYPES, WAVES, towerStats, planUpgrade, waveSummary, resultFor, forestForRound, planSupport, applyDamage, SUPPORT_COOLDOWN } from './rules.mjs';
+import { BEAT_SECONDS, STARTER_PADS, FIRST_COUNTDOWN, BREAK_SECONDS, COMBO_WINDOW, TOTAL_ENEMIES, comboAfterKill, waveReward, ENEMY_TYPES, WAVES, towerStats, planUpgrade, waveSummary, resultFor, forestForRound, planSupport, applyDamage, SUPPORT_COOLDOWN, FORESTS, creditEchoes, suggestUpgrade, canResonate, recordForestStars, RESONANCE_DAMAGE } from './rules.mjs';
 
 const $=s=>document.querySelector(s), clamp=THREE.MathUtils.clamp;
 let roundNumber=0;try{const stored=Number(localStorage.getItem('echo.round.v6')||0);roundNumber=Number.isFinite(stored)&&stored>=0?Math.floor(stored):0;}catch{}
 const forest=forestForRound(roundNumber),nextForest=forestForRound(roundNumber+1);
 let seed=8331+(roundNumber%3)*601;const rand=()=>{seed=seed*16807%2147483647;return(seed-1)/2147483646;};
-const state={started:false,paused:false,ended:false,health:6,seeds:3,planted:0,wave:0,fighting:false,kills:0,time:0,points:0,escaped:0,upgrades:0,won:null,combo:0,maxCombo:0,comboAt:-999,multiplier:1,supportHits:0,perfectHits:0,supportReadyAt:0,forest:forest.id};
+const state={started:false,paused:false,ended:false,health:6,seeds:3,planted:0,wave:0,fighting:false,kills:0,time:0,points:0,escaped:0,upgrades:0,won:null,combo:0,maxCombo:0,comboAt:-999,multiplier:1,supportHits:0,perfectHits:0,supportReadyAt:0,forest:forest.id,resonanceWave:0,resonanceQueued:false,resonanceUntil:0,resonances:0,overflowScore:0};
 const scene=new THREE.Scene();scene.background=new THREE.Color(forest.fog);scene.fog=new THREE.FogExp2(forest.fog,.014);
 const camera=new THREE.PerspectiveCamera(66,innerWidth/innerHeight,.08,180);camera.rotation.order='YXZ';
 const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,1.25));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.shadowMap.autoUpdate=false;renderer.shadowMap.needsUpdate=true;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;$('#world').appendChild(renderer.domElement);
@@ -91,6 +91,14 @@ function updateHUD(){
   $('#heart-number').textContent=state.health+' / 6';
 }
 
+function rewardText(reward){
+  return [reward.received?'+'+reward.received+' 回响':'',reward.points?'+'+reward.points+' 分':''].filter(Boolean).join(' · ');
+}
+function grantEchoes(amount,position){
+  const reward=creditEchoes(state.seeds,amount);state.seeds=reward.balance;state.points+=reward.points;state.overflowScore+=reward.points;
+  if(position&&amount)floatText(rewardText(reward),position,true);
+  updateHUD();return reward;
+}
 function activate(pad){if(pad.active){selectTower(pad);upgradeSelected();return;}if(state.planted<3&&!STARTER_PADS.includes(pad.index)){say('先点亮金色的三个位置。',3);return;}if(!awakened){say('先走近桥后的微光，唤醒林间之心。',4);return;}if(state.seeds<1){say('掌心暂时空了。让旋律击退暗影，回响就会回来。',4);return;}state.seeds--;state.planted++;pad.active=true;pad.level=1;renderer.shadowMap.needsUpdate=true;pad.ghost.visible=false;pad.aura.material.opacity=.6;const g=new THREE.Group();pad.group.add(g);pad.building=g;box(g,0,.57,0,.8,.3,.8,0x9ba997,'stone');box(g,0,.95,0,.5,.6,.5,0xb3a080,'plank');box(g,0,1.3,0,.8,.1,.8,0xd7b885,'plank');for(const x of [-.24,.24])box(g,x,1.05,.28,.07,.48,.07,0xe2cfa6);const gem=box(g,0,1.62,0,.36,.36,.36,pad.index%2?0xb9dfd5:0xffd69b,'',2.2);gem.rotation.set(.5,.3,.7);pad.top=gem;glow(g,0,1.6,0,2.1,pad.index%2?0xb7dece:0xfbd093,.38);pad.aura.position.y=1.25;pad.pulse=1;plantKick=1;note(pad,1.5);burst(new THREE.Vector3(pad.x,1.1,pad.z),0xffd69b,16);updateHUD();lastGuide='';updateBuildGuide();if(state.wave===0&&state.planted===3){prepTimer=FIRST_COUNTDOWN;say('好听！5 秒后，听听防线的力量。',4);}else say('共鸣音塔已建造 · 防线 '+state.planted+' / 8',2.5);}
 
 function wake(){if(awakened){say('它在轻轻跳动。只要旋律还在，它就不怕黑。',4);return;}awakened=true;phase=1;prepTimer=0;heartLight.intensity=24;objective(2,'把光种在石头上','走近周围的微光石台，按 E 点亮。');say('它怕黑。为它留下一点声音吧。',6);for(let i=0;i<3;i++)setTimeout(()=>tone([293.66,440,587.33][i],2,.15),i*220);}
@@ -118,13 +126,28 @@ function damageEnemy(e,amount,prefix='−'){
     const chain=comboAfterKill(state.combo,state.comboAt,state.time);
     state.combo=chain.count;state.comboAt=state.time;state.multiplier=chain.multiplier;state.maxCombo=Math.max(state.maxCombo,chain.count);
     state.kills++;state.points+=Math.round(e.points*chain.multiplier);
-    const gain=(state.kills%2===0?1:0)+chain.reward,received=Math.min(gain,9-state.seeds);
-    if(received>0){state.seeds+=received;floatText('+'+received+' 回响',e.mesh.position.clone().add(new THREE.Vector3(0,2,0)),true);updateHUD();}
-    if(chain.reward){tone(frequencies[chain.count%8]*2,.7,.045);say(chain.count+' 连奏！额外 +'+chain.reward+' 回响',2);}
+    const gain=(state.kills%2===0?1:0)+chain.reward;
+    if(gain)grantEchoes(gain,e.mesh.position.clone().add(new THREE.Vector3(0,2,0)));
+    if(chain.reward){tone(frequencies[chain.count%8]*2,.7,.045);say(chain.count+' 连奏！额外奖励已到账',2);}
+    if(canResonate(chain.count,state.resonanceWave,state.wave)){state.resonanceWave=state.wave;state.resonanceQueued=true;}
     $('#combo-hud').classList.remove('popped');void $('#combo-hud').offsetWidth;$('#combo-hud').classList.add('popped');
     burst(e.mesh.position.clone().add(new THREE.Vector3(0,.7,0)),0xeec895,12);
   }
   return true;
+}
+function resonate(){
+  if(!state.resonanceQueued||!state.fighting||state.ended||!enemies.some(e=>e.hp>0))return;
+  state.resonanceQueued=false;state.resonanceUntil=state.time+2;state.resonances++;
+  const center=new THREE.Vector3(0,2,-4.8);
+  for(const p of pads.filter(p=>p.active)){
+    p.pulse=1;trail(new THREE.Vector3(p.x,1.8,p.z),center,0xf2d698);pulseRing(new THREE.Vector3(p.x,0,p.z),0xcce9c0);
+  }
+  pulseRing(new THREE.Vector3(0,0,-4.8),0xffd69b);
+  for(const e of enemies.filter(e=>e.hp>0)){
+    trail(center,e.mesh.position.clone().add(new THREE.Vector3(0,.8,0)),0xe7dca9);damageEnemy(e,RESONANCE_DAMAGE,'共鸣 −');
+  }
+  tone(frequencies[0],1.4,.1);tone(frequencies[2],1.2,.075);tone(frequencies[4],1.5,.08);
+  say('六连奏！全队共鸣，暗影受到 '+RESONANCE_DAMAGE+' 点伤害',3);
 }
 const assistGeometry=new THREE.BoxGeometry(1.3,1.7,1.4),assistMaterial=new THREE.MeshBasicMaterial({visible:false});
 function supportEnemy(e){
@@ -152,7 +175,7 @@ function musicalBeat(){
 }
 
 let spawned=0,spawnTimer=0,waveElapsed=0,waveEscapesAtStart=0,waveKillsAtStart=0,rewardUntil=0;const nightNames=['第一夜 · 风停了','第二夜 · 林子深处','最后一夜 · 天亮之前'];
-function startNight(){if(state.fighting||state.ended||state.wave>=WAVES.length)return;nextNightTimer=0;prepTimer=0;state.wave++;state.combo=0;state.multiplier=1;state.comboAt=-999;waveEscapesAtStart=state.escaped;waveKillsAtStart=state.kills;$('#wave-reward').hidden=true;state.fighting=true;phase=2;spawned=0;spawnTimer=0;waveElapsed=0;$('#chapter').textContent=nightNames[state.wave-1];$('#chapter-sub').textContent=forest.name+' · 点暗影可以支援';objective(4,'有东西正穿过森林','音石会随旋律驱散暗影。寻找还没点亮的石台。');say(state.wave===1?'风停了。可你的旋律，没有停。':state.wave===2?'黑暗又近了一些。把剩下的光种下吧。':'再坚持一会儿。山那边，快有光了。',6);}
+function startNight(){if(state.fighting||state.ended||state.wave>=WAVES.length)return;nextNightTimer=0;prepTimer=0;state.wave++;state.resonanceQueued=false;state.combo=0;state.multiplier=1;state.comboAt=-999;waveEscapesAtStart=state.escaped;waveKillsAtStart=state.kills;$('#wave-reward').hidden=true;state.fighting=true;phase=2;spawned=0;spawnTimer=0;waveElapsed=0;$('#chapter').textContent=nightNames[state.wave-1];$('#chapter-sub').textContent=forest.name+' · 点暗影可以支援';objective(4,'有东西正穿过森林','音石会随旋律驱散暗影。寻找还没点亮的石台。');say(state.wave===1?'风停了。可你的旋律，没有停。':state.wave===2?'黑暗又近了一些。把剩下的光种下吧。':'再坚持一会儿。山那边，快有光了。',6);}
 function spawn(){
   const type=WAVES[state.wave-1].enemies[spawned],spec=ENEMY_TYPES[type],g=new THREE.Group();
   const body=box(g,0,.55,0,.55,.55,.85,spec.color,'stone');body.material=body.material.clone();
@@ -179,18 +202,18 @@ function removeEnemy(enemy){
 }
 
 function nightCleared(){
-  state.fighting=false;
+  state.fighting=false;state.resonanceQueued=false;
   const reward=waveReward(state.escaped-waveEscapesAtStart,state.health),healed=reward.health-state.health;
-  state.seeds=Math.min(9,state.seeds+reward.seeds);state.health=reward.health;updateHUD();
+  const credited=grantEchoes(reward.seeds,new THREE.Vector3(0,3.5,-4.8));state.health=reward.health;updateHUD();
   if(state.wave===3){finish(true);return;}
   nextNightTimer=BREAK_SECONDS;phase=1;clearSelection();
   $('#chapter').textContent='漂亮，继续！';$('#chapter-sub').textContent='点击已有音塔，直接升级';
-  $('#reward-tag').textContent=reward.perfect?'完美守住！':'好样的，守住了！';
+  $('#reward-tag').textContent=credited.overflow?'回响满了，也有收获！':reward.perfect?'完美守住！':'好样的，守住了！';
   $('#reward-title').textContent='第 '+state.wave+' 波搞定';
-  $('#reward-detail').textContent='+'+reward.seeds+' 回响'+(healed?' · 核心 +1':'')+' · 点音塔就能升级';
+  $('#reward-detail').textContent=rewardText(credited)+(healed?' · 核心 +1':'')+' · 点推荐音塔升级';
   $('#wave-reward').hidden=false;rewardUntil=state.time+2.5;
   tone(frequencies[0],1.1,.1);tone(frequencies[4],1.2,.08);
-  say('奖励已到账。点已有音塔，直接升一级！',3);
+  say(rewardText(credited)+' · 点金色推荐，升一级！',3);
 }
 
 function finish(won){
@@ -198,13 +221,18 @@ function finish(won){
   state.ended=true;state.won=won;state.fighting=false;phase=won?3:2;keys.clear();document.exitPointerLock?.();clearSelection();
   const result=resultFor({won,health:state.health,points:state.points,kills:state.kills,duration:state.time,escaped:state.escaped,maxCombo:state.maxCombo});
   let best=0;try{best=Number(localStorage.getItem('echo.best-score.v6.'+forest.id)||0);if(!Number.isFinite(best))best=0;if(won&&result.score>best){best=result.score;localStorage.setItem('echo.best-score.v6.'+forest.id,String(best));}}catch{}
+  let previousStars={};try{previousStars=JSON.parse(localStorage.getItem('echo.forest-stars')||'{}');}catch{}
+  const stars=recordForestStars(previousStars,forest.id,result.stars);
+  if(won)try{localStorage.setItem('echo.forest-stars',JSON.stringify(stars));}catch{}
+  const completed=Object.values(stars).filter(n=>n>0).length;
+  $('#forest-stamps').innerHTML='<small>三片原野 · 已守护 '+completed+' / 3</small><div>'+FORESTS.map(f=>'<span class="'+(f.id===forest.id?'current':'')+'"><b>'+f.name+'</b><em>'+Array.from({length:3},(_,i)=>i<stars[f.id]?'★':'☆').join('')+'</em></span>').join('')+'</div>';
   $('#ending-title').innerHTML=won?'天亮了。<br>你的歌，还在林间。':'风吹散了最后的微光。';
   $('#ending-tag').textContent=won?'THE WOODS REMEMBER':'THE WOODS WILL WAIT';
   $('#ending-stars').innerHTML=Array.from({length:3},(_,i)=>`<span class="${i>=result.stars?'dim':''}">★</span>`).join('');
   $('#ending-stars').setAttribute('aria-label',won?result.stars+' 星守护':'守护未完成');
   $('#ending-description').textContent=won?'你守住了'+forest.name+'。下一次，去'+nextForest.name+'听听新的旋律。':'下次试着点一下暗影，弹奏支援。也可以再升级前排音塔。';$('#again').textContent='去'+nextForest.name+'，再来一局 ↗';
   $('#ending-stats').innerHTML=`<div><b>${result.score}</b><span>守护得分</span></div><div><b>${result.kills} / ${TOTAL_ENEMIES}</b><span>驱散暗影</span></div><div><b>${result.health} / 6</b><span>核心完整</span></div>`;
-  $('#best-score').textContent='最高 '+state.maxCombo+' 连奏 · 合拍 '+state.perfectHits+' 次 · 用时 '+clockText(result.duration)+' · 本林最佳 '+best+' 分';
+  $('#best-score').textContent='共鸣 '+state.resonances+' 次 · 最高 '+state.maxCombo+' 连奏 · 合拍 '+state.perfectHits+' 次 · 用时 '+clockText(result.duration)+' · 本林最佳 '+best+' 分';
   setTimeout(()=>$('#ending').showModal(),won?1800:900);
   if(won){tone(frequencies[0],2,.12);tone(frequencies[2],2,.07);tone(frequencies[4],2,.08);}$('#wave-reward').hidden=true;
   say(won?'三波已守住。听，鸟儿醒了。':'核心已失守。下一次，让前排的声音更有力量。',6);
@@ -234,7 +262,7 @@ addEventListener('keydown',e=>{if($('dialog[open]'))return;if(e.code==='KeyV'&&!
 let viewMode='overview',orbitYaw=.18,orbitPitch=.95,orbitDistance=49;
 const overviewTarget=new THREE.Vector3(0,0,-16);
 const avatar=new THREE.Group();box(avatar,0,.74,0,.45,.6,.3,0x829b89,'plank');box(avatar,0,1.3,0,.42,.43,.4,0xdfb995);box(avatar,0,1.54,0,.45,.12,.43,0x685b4a,'bark');for(const x of [-.12,.12])box(avatar,x,.22,0,.17,.44,.22,0x536575);for(const x of [-.33,.33])box(avatar,x,.79,0,.18,.5,.22,0x96a98d);avatar.visible=false;scene.add(avatar);
-function setView(mode,notify=true){viewMode=mode;keys.clear();drag=null;document.exitPointerLock?.();document.body.classList.toggle('overview',mode==='overview');document.body.classList.toggle('first-person',mode==='first');camera.fov=mode==='overview'?50:66;camera.updateProjectionMatrix();scene.fog.density=mode==='overview'?.007:.014;renderer.toneMappingExposure=mode==='overview'?1.25:1.1;$('#view-toggle').innerHTML=(mode==='overview'?'◎ 俯瞰建造':'◉ 第一人称')+' <kbd>V</kbd>';$('#view-toggle').setAttribute('aria-label',mode==='overview'?'切换到第一人称':'切换到俯瞰建造');$('#view-notice').textContent=mode==='overview'?'俯瞰建造 · 拖动环视 · 滚轮缩放':'第一人称 · WASD 行走 · 拖动环视';$('.walk-help').innerHTML=mode==='overview'?'<span><kbd>V</kbd> 第一人称</span><span><kbd>拖动 / 滚轮</kbd> 调整视角</span><span><kbd>点击虚影</kbd> 建造</span>':'<span><kbd>V</kbd> 俯瞰建造</span><span><kbd>WASD</kbd> 行走</span><span><kbd>E / 点击</kbd> 建造</span>';if(notify)say(mode==='overview'?'俯瞰建造：点击金色虚影即可建造。':'第一人称：靠近标记石台，按 E 建造。',3);}
+function setView(mode,notify=true){viewMode=mode;keys.clear();drag=null;document.exitPointerLock?.();document.body.classList.toggle('overview',mode==='overview');document.body.classList.toggle('first-person',mode==='first');camera.fov=mode==='overview'?50:66;camera.updateProjectionMatrix();scene.fog.density=mode==='overview'?.007:.014;renderer.toneMappingExposure=mode==='overview'?1.25:1.1;$('#view-toggle').innerHTML=(mode==='overview'?'◎ 俯瞰建造':'◉ 第一人称')+' <kbd>V</kbd>';$('#view-toggle').setAttribute('aria-label',mode==='overview'?'切换到第一人称':'切换到俯瞰建造');$('#view-notice').textContent=mode==='overview'?'俯瞰建造 · 拖动环视 · 滚轮缩放':'第一人称 · WASD 行走 · 拖动环视';$('.walk-help').innerHTML=mode==='overview'?'<span><kbd>V</kbd> 第一人称</span><span><kbd>拖动 / 滚轮</kbd> 调整视角</span><span><kbd>点击虚影</kbd> 建造</span>':'<span><kbd>V</kbd> 俯瞰建造</span><span><kbd>WASD</kbd> 行走</span><span><kbd>E / 点击</kbd> 建造</span>';if(mode==='overview'){camera.position.set(overviewTarget.x+Math.sin(orbitYaw)*Math.cos(orbitPitch)*orbitDistance,Math.sin(orbitPitch)*orbitDistance,overviewTarget.z+Math.cos(orbitYaw)*Math.cos(orbitPitch)*orbitDistance);camera.lookAt(overviewTarget);}else{camera.position.copy(player);camera.rotation.set(pitch,yaw,0,'YXZ');}camera.updateMatrixWorld(true);if(state.started)updateMarkers();if(notify)say(mode==='overview'?'俯瞰建造：点击金色虚影即可建造。':'第一人称：靠近标记石台，按 E 建造。',3);}
 function toggleView(){if(!state.started){start();return;}if(!state.paused)setView(viewMode==='overview'?'first':'overview');}
 $('#view-toggle').onclick=toggleView;$('#send-wave').onclick=()=>{if(state.started&&!state.paused&&!state.ended&&!state.fighting&&state.planted>=3)startNight();};
 const recommended=STARTER_PADS,padMarkers=[];
@@ -259,7 +287,7 @@ function updateBuildGuide(){
   $('#tower-title').textContent=p?'音塔 · '+['','I','II','III'][p.level]:'点亮音塔';
   $('#tower-price').textContent=p?(p.level===3?'已满级':'↑ ◇ '+(p.level+1)):'◇ 1';
   $('#tower-stats').innerHTML=p?'伤害 '+towerStats(p.level).damage+' · 射程 '+towerStats(p.level).range+' 米':'点空位建造<br>再点音塔，就能升级';
-  $('#build-instruction').textContent=p?(p.level===3?'这座已满级，点另一座试试':state.seeds>=p.level+1?'再点这座音塔，直接升级':'打怪会带回回响，很快就能升级'):initial?'点亮三个金色位置就开打':'金色箭头亮起，表示可以升级';
+  $('#build-instruction').textContent=p?(p.level===3?'这座已满级，点另一座试试':state.seeds>=p.level+1?'再点这座音塔，直接升级':'打怪会带回回响，很快就能升级'):initial?'点亮三个金色位置就开打':suggestUpgrade(pads,state.seeds)!==null?'只看金色推荐，先升这一座':'等音塔打怪，回响会回来';
   $('#build-goal').textContent=initial?'先点三下':'你的乐队';$('#build-count').textContent=initial?state.planted+' / 3':state.planted+' 座音塔';
   document.querySelectorAll('#build-slots i').forEach((el,i)=>el.classList.toggle('done',i<state.planted));
   if(state.ended)return;
@@ -285,10 +313,10 @@ function updateWaveStatus(){
 }
 
 function markerPosition(wrap,position){const p=position.clone().project(camera);const visible=p.z>-1&&p.z<1&&Math.abs(p.x)<1.1&&Math.abs(p.y)<1.1;wrap.classList.toggle('hidden',!visible);if(visible){wrap.style.left=(p.x*.5+.5)*innerWidth+'px';wrap.style.top=(-p.y*.5+.5)*innerHeight+'px';}}
-function updateMarkers(){for(const {wrap,button,pad:p} of padMarkers){const unlocked=state.planted>=3||STARTER_PADS.includes(p.index);p.preview.visible=!p.active&&unlocked;const distance=Math.hypot(player.x-p.x,player.z-p.z);const visible=unlocked&&(viewMode==='overview'||distance<10);wrap.style.display=visible?'':'none';if(!visible)continue;const rec=recommended.indexOf(p.index);button.disabled=state.ended;button.className='pad-marker'+(p.active?' built':rec>=0&&state.planted<3?' recommended':'')+(p.level>1?' upgraded':'')+(p.index===selectedTower?' selected':'');
+function updateMarkers(){const suggestion=suggestUpgrade(pads,state.seeds);for(const {wrap,button,pad:p} of padMarkers){const unlocked=state.planted>=3||STARTER_PADS.includes(p.index);p.preview.visible=!p.active&&unlocked;const distance=Math.hypot(player.x-p.x,player.z-p.z);const visible=unlocked&&(viewMode==='overview'||distance<10);wrap.style.display=visible?'':'none';if(!visible)continue;const rec=recommended.indexOf(p.index);button.disabled=state.ended;button.className='pad-marker'+(p.active?' built':rec>=0&&state.planted<3?' recommended':'')+(p.level>1?' upgraded':'')+(p.index===selectedTower?' selected':'');
 button.setAttribute('aria-label',p.active?`升级第 ${p.index+1} 座共鸣音塔，当前 ${p.level} 级`:`建造第 ${p.index+1} 座共鸣音塔，消耗 1 回响`);
-const affordable=p.active&&p.level<3&&state.seeds>=p.level+1;button.classList.toggle('can-upgrade',affordable);
-const label=p.active?(p.level<3?'↑ 升级<small>'+['','I','II','III'][p.level]+' → '+['','I','II','III'][p.level+1]+' · ◇ '+(p.level+1)+'</small>':'♫ 满级 III'):(state.planted<3?'<span class="recommend">点亮 '+(rec+1)+'</span>':'')+'＋ 音塔'+(state.planted<3?'':'<small>◇ 1</small>');if(button.innerHTML!==label)button.innerHTML=label;markerPosition(wrap,new THREE.Vector3(p.x,p.active?2.3:2.1,p.z));}for(const label of placeLabels){label.wrap.style.display=viewMode==='overview'?'':'none';if(viewMode==='overview')markerPosition(label.wrap,label.position);}if(selectedTower!==null){const p=pads[selectedTower];rangeRing.visible=viewMode==='overview';rangeRing.position.set(p.x,.16,p.z);rangeRing.scale.setScalar(towerStats(p.level).range/13);}else if(rangeUntil<state.time)rangeRing.visible=false;}
+const affordable=p.active&&p.level<3&&state.seeds>=p.level+1;button.classList.toggle('can-upgrade',affordable&&p.index===suggestion);button.classList.toggle('upgrade-ready',affordable);
+const label=p.active?(p.level<3?(p.index===suggestion?'推荐 ↑<small>':'↑ 升级<small>')+['','I','II','III'][p.level]+' → '+['','I','II','III'][p.level+1]+' · ◇ '+(p.level+1)+'</small>':'♫ 满级 III'):(state.planted<3?'<span class="recommend">点亮 '+(rec+1)+'</span>':'')+'＋ 音塔'+(state.planted<3?'':'<small>◇ 1</small>');if(button.innerHTML!==label)button.innerHTML=label;markerPosition(wrap,new THREE.Vector3(p.x,p.active?2.3:2.1,p.z));}for(const label of placeLabels){label.wrap.style.display=viewMode==='overview'?'':'none';if(viewMode==='overview')markerPosition(label.wrap,label.position);}if(selectedTower!==null){const p=pads[selectedTower];rangeRing.visible=viewMode==='overview';rangeRing.position.set(p.x,.16,p.z);rangeRing.scale.setScalar(towerStats(p.level).range/13);}else if(rangeUntil<state.time)rangeRing.visible=false;}
 let selectedTower=null;
 const floatingTexts=[];
 for(let i=0;i<8;i++)$('#beat-dots').appendChild(document.createElement('i'));
@@ -318,6 +346,7 @@ function upgradeSelected(){
 }
 $('#upgrade-tower').onclick=upgradeSelected;$('#clear-selection').onclick=clearSelection;
 function updateJuice(){
+  resonate();
   const ready=state.time>=state.supportReadyAt;
   $('#support-meter').hidden=!state.fighting||state.ended;
   $('#support-ready').style.width=clamp((1-(state.supportReadyAt-state.time)/SUPPORT_COOLDOWN)*100,0,100)+'%';
@@ -332,7 +361,8 @@ function updateJuice(){
   }
   const life=COMBO_WINDOW-(state.time-state.comboAt),show=state.combo>=2&&life>0&&!state.ended;
   $('#combo-hud').hidden=!show;
-  if(show){$('#combo-count').textContent=state.combo;$('#combo-bonus').textContent='得分 ×'+state.multiplier;$('#combo-life').style.width=clamp(life/COMBO_WINDOW*100,0,100)+'%';}
+  if(show){$('#combo-count').textContent=state.combo;$('#combo-bonus').textContent=state.time<state.resonanceUntil?'♪ 全队共鸣爆发':'得分 ×'+state.multiplier;$('#combo-life').style.width=clamp(life/COMBO_WINDOW*100,0,100)+'%';}
+  $('#combo-hud').classList.toggle('resonating',state.time<state.resonanceUntil&&!state.ended);
   if(!$('#wave-reward').hidden&&state.time>=rewardUntil)$('#wave-reward').hidden=true;
   const boss=enemies.find(e=>e.type==='boss'&&e.hp>0);$('#boss-hud').hidden=!boss||state.ended;
   if(boss){$('#boss-number').textContent=Math.max(0,boss.hp)+' / '+boss.maxHp;$('#boss-life').style.width=clamp(boss.hp/boss.maxHp*100,0,100)+'%';}
