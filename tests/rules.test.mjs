@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planUpgrade, towerStats, WAVES, ENEMY_TYPES, waveSummary, resultFor } from '../dist/rules.mjs';
+import { planUpgrade, towerStats, WAVES, ENEMY_TYPES, waveSummary, resultFor, TOTAL_ENEMIES, comboAfterKill, waveReward, COMBO_WINDOW } from '../dist/rules.mjs';
 
 test('an unaffordable upgrade preserves level and all currency', () => {
   assert.deepEqual(planUpgrade(1, 1), { allowed: false, reason: 'funds', balance: 1, level: 1, cost: 2 });
@@ -23,9 +23,9 @@ test('upgrades improve damage and range without accepting corrupt levels', () =>
   assert.throws(() => planUpgrade(1, -1), RangeError);
 });
 test('every declared wave has a valid roster matching its preview', () => {
-  assert.deepEqual(WAVES.map(w => w.enemies.length), [7, 9, 11]);
+  assert.deepEqual(WAVES.map(w => w.enemies.length), [5, 8, 10]);
   for (const wave of WAVES) for (const type of wave.enemies) assert.ok(ENEMY_TYPES[type]);
-  assert.equal(waveSummary(2), '4 暗影 · 3 疾影 · 2 重影');
+  assert.equal(waveSummary(2), '3 暗影 · 3 疾影 · 2 重影');
   assert.equal(waveSummary(4), '');
 });
 test('a loss never awards completion stars and zero health gives no bonus', () => {
@@ -40,4 +40,25 @@ test('only a perfect core earns three stars', () => {
   assert.equal(make(5).stars, 2);
   assert.equal(make(2).stars, 1);
   assert.equal(make(6).score, 1000);
+});
+
+test('three fast waves culminate in exactly one final boss', () => {
+  assert.equal(TOTAL_ENEMIES, 23);
+  assert.equal(WAVES.at(-1).enemies.at(-1), 'boss');
+  assert.equal(WAVES.flatMap(w => w.enemies).filter(t => t === 'boss').length, 1);
+});
+test('combo renews inside the window and expires outside it', () => {
+  assert.equal(comboAfterKill(2, 10, 10 + COMBO_WINDOW).count, 3);
+  assert.equal(comboAfterKill(2, 10, 10 + COMBO_WINDOW + .01).count, 1);
+});
+test('combo grants milestones once and caps the score multiplier', () => {
+  assert.equal(comboAfterKill(2, 10, 11).reward, 1);
+  assert.equal(comboAfterKill(3, 11, 12).reward, 0);
+  assert.equal(comboAfterKill(9, 10, 11).reward, 2);
+  assert.equal(comboAfterKill(30, 10, 11).multiplier, 2);
+});
+test('wave healing cannot exceed full health or hide a leaked enemy in the rating', () => {
+  assert.deepEqual(waveReward(0, 6), { seeds: 3, health: 6, perfect: true });
+  assert.deepEqual(waveReward(1, 5), { seeds: 2, health: 6, perfect: false });
+  assert.equal(resultFor({won:true,health:6,points:100,kills:1,duration:60,escaped:1}).stars, 2);
 });
