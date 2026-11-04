@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planUpgrade, towerStats, WAVES, ENEMY_TYPES, waveSummary, resultFor, TOTAL_ENEMIES, comboAfterKill, waveReward, COMBO_WINDOW } from '../dist/rules.mjs';
+import { planUpgrade, towerStats, WAVES, ENEMY_TYPES, waveSummary, resultFor, TOTAL_ENEMIES, comboAfterKill, waveReward, COMBO_WINDOW, forestForRound, FORESTS, planSupport, applyDamage, SUPPORT_COOLDOWN, BEAT_SECONDS } from '../dist/rules.mjs';
 
 test('an unaffordable upgrade preserves level and all currency', () => {
   assert.deepEqual(planUpgrade(1, 1), { allowed: false, reason: 'funds', balance: 1, level: 1, cost: 2 });
@@ -61,4 +61,35 @@ test('wave healing cannot exceed full health or hide a leaked enemy in the ratin
   assert.deepEqual(waveReward(0, 6), { seeds: 3, health: 6, perfect: true });
   assert.deepEqual(waveReward(1, 5), { seeds: 2, health: 6, perfect: false });
   assert.equal(resultFor({won:true,health:6,points:100,kills:1,duration:60,escaped:1}).stars, 2);
+});
+
+test('replays cycle through all three forests without changing tower rules', () => {
+  assert.equal(FORESTS.length, 3);
+  assert.equal(forestForRound(0).id, 'mist');
+  assert.equal(forestForRound(1).id, 'firefly');
+  assert.equal(forestForRound(2).id, 'amber');
+  assert.equal(forestForRound(3).id, 'mist');
+  assert.equal(forestForRound(NaN).id, 'mist');
+  assert.equal(forestForRound(-1).id, 'mist');
+});
+test('support respects its cooldown without consuming a second shot', () => {
+  const shot=planSupport(10, 10, 0);
+  assert.equal(shot.allowed, true);
+  assert.equal(shot.readyAt, 10 + SUPPORT_COOLDOWN);
+  assert.deepEqual(planSupport(10.1, shot.readyAt, 0), {allowed:false,readyAt:shot.readyAt,perfect:false,damage:0});
+  assert.equal(planSupport(shot.readyAt, shot.readyAt, 0).allowed, true);
+});
+test('support is forgiving around a beat but still useful away from it', () => {
+  assert.equal(planSupport(1, 0, .02).perfect, true);
+  assert.equal(planSupport(1, 0, BEAT_SECONDS - .02).perfect, true);
+  const offbeat=planSupport(1, 0, BEAT_SECONDS / 2);
+  assert.equal(offbeat.perfect, false);
+  assert.equal(offbeat.damage, 14);
+  assert.equal(planSupport(1, 0, 0).damage, 22);
+});
+test('overkill and a second attacker cannot award the same kill twice', () => {
+  const first=applyDamage(10,22);
+  assert.deepEqual(first, {hp:0,applied:10,killed:true});
+  assert.deepEqual(applyDamage(first.hp,25), {hp:0,applied:0,killed:false});
+  assert.deepEqual(applyDamage(25,-5), {hp:25,applied:0,killed:false});
 });

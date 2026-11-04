@@ -62,3 +62,24 @@ export function resultFor({ won, health, points, kills, duration, escaped = 0, m
     kills, health, maxCombo, duration: Math.floor(duration),
   };
 }
+
+export const SUPPORT_COOLDOWN = .65;
+export const FORESTS = Object.freeze([
+  Object.freeze({ id:'mist', name:'雾松林', tag:'MIST & PINE', top:0x263854, horizon:0xe1a886, fog:0x5d737b, leaf:0x739c8d, grassHue:.25, sun:0xffd0a0, mote:0xffdca0, pitch:1 }),
+  Object.freeze({ id:'firefly', name:'萤火林', tag:'FIREFLY GROVE', top:0x243449, horizon:0x98b9b0, fog:0x526e75, leaf:0x739f9c, grassHue:.30, sun:0xc7e0cf, mote:0xc9f2b0, pitch:9/8 }),
+  Object.freeze({ id:'amber', name:'琥珀林', tag:'AMBER WOODS', top:0x47334b, horizon:0xf0b48a, fog:0x887d73, leaf:0xd9ae72, grassHue:.20, sun:0xffc486, mote:0xffd9a0, pitch:4/3 }),
+]);
+export function forestForRound(round) {
+  const index = Number.isFinite(round) && round >= 0 ? Math.floor(round) : 0;
+  return FORESTS[index % FORESTS.length];
+}
+export function planSupport(now, readyAt, untilNextBeat) {
+  if (now < readyAt) return { allowed:false, readyAt, perfect:false, damage:0 };
+  const phase = ((untilNextBeat % BEAT_SECONDS) + BEAT_SECONDS) % BEAT_SECONDS;
+  const perfect = Math.min(phase, BEAT_SECONDS - phase) <= .07;
+  return { allowed:true, readyAt:now + SUPPORT_COOLDOWN, perfect, damage:perfect ? 22 : 14 };
+}
+export function applyDamage(hp, damage) {
+  const applied = Math.min(Math.max(0, hp), Math.max(0, damage));
+  return { hp:Math.max(0, hp - applied), applied, killed:hp > 0 && hp - applied <= 0 };
+}

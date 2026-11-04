@@ -1,15 +1,17 @@
 import * as THREE from 'three';
-import { BEAT_SECONDS, STARTER_PADS, FIRST_COUNTDOWN, BREAK_SECONDS, COMBO_WINDOW, TOTAL_ENEMIES, comboAfterKill, waveReward, ENEMY_TYPES, WAVES, towerStats, planUpgrade, waveSummary, resultFor } from './rules.mjs';
+import { BEAT_SECONDS, STARTER_PADS, FIRST_COUNTDOWN, BREAK_SECONDS, COMBO_WINDOW, TOTAL_ENEMIES, comboAfterKill, waveReward, ENEMY_TYPES, WAVES, towerStats, planUpgrade, waveSummary, resultFor, forestForRound, planSupport, applyDamage, SUPPORT_COOLDOWN } from './rules.mjs';
 
 const $=s=>document.querySelector(s), clamp=THREE.MathUtils.clamp;
-let seed=8331;const rand=()=>{seed=seed*16807%2147483647;return(seed-1)/2147483646;};
-const state={started:false,paused:false,ended:false,health:6,seeds:3,planted:0,wave:0,fighting:false,kills:0,time:0,points:0,escaped:0,upgrades:0,won:null,combo:0,maxCombo:0,comboAt:-999,multiplier:1};
-const scene=new THREE.Scene();scene.background=new THREE.Color(0x5d737b);scene.fog=new THREE.FogExp2(0x5d737b,.014);
+let roundNumber=0;try{const stored=Number(localStorage.getItem('echo.round.v6')||0);roundNumber=Number.isFinite(stored)&&stored>=0?Math.floor(stored):0;}catch{}
+const forest=forestForRound(roundNumber),nextForest=forestForRound(roundNumber+1);
+let seed=8331+(roundNumber%3)*601;const rand=()=>{seed=seed*16807%2147483647;return(seed-1)/2147483646;};
+const state={started:false,paused:false,ended:false,health:6,seeds:3,planted:0,wave:0,fighting:false,kills:0,time:0,points:0,escaped:0,upgrades:0,won:null,combo:0,maxCombo:0,comboAt:-999,multiplier:1,supportHits:0,perfectHits:0,supportReadyAt:0,forest:forest.id};
+const scene=new THREE.Scene();scene.background=new THREE.Color(forest.fog);scene.fog=new THREE.FogExp2(forest.fog,.014);
 const camera=new THREE.PerspectiveCamera(66,innerWidth/innerHeight,.08,180);camera.rotation.order='YXZ';
 const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,1.25));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.shadowMap.autoUpdate=false;renderer.shadowMap.needsUpdate=true;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;$('#world').appendChild(renderer.domElement);
 
 const hemi=new THREE.HemisphereLight(0xc2d5ec,0x343f35,1.55);scene.add(hemi);
-const sun=new THREE.DirectionalLight(0xffd0a0,2.8);sun.position.set(-30,24,-38);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-32,right:32,top:34,bottom:-34,near:1,far:110});sun.shadow.normalBias=.045;sun.shadow.bias=-.0002;sun.target.position.set(0,0,-8);scene.add(sun,sun.target);
+const sun=new THREE.DirectionalLight(forest.sun,2.8);sun.position.set(-30,24,-38);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-32,right:32,top:34,bottom:-34,near:1,far:110});sun.shadow.normalBias=.045;sun.shadow.bias=-.0002;sun.target.position.set(0,0,-8);scene.add(sun,sun.target);
 const moonFill=new THREE.DirectionalLight(0x8fb1df,.6);moonFill.position.set(16,30,15);scene.add(moonFill);
 const cube=new THREE.BoxGeometry(1,1,1), materialCache=new Map();
 function texture(kind){const c=document.createElement('canvas');c.width=c.height=32;const ctx=c.getContext('2d');const palettes={stone:['#a4a7a1','#8c9692','#bac0b4','#7b8885'],grass:['#81947a','#75896b','#91a07c','#697e67'],bark:['#7c6a56','#6b5a49','#91806a','#5c5043'],leaf:['#819a85','#6e8e78','#9aa88b','#5c806f'],plank:['#aa9576','#8b795f','#c0aa8a','#74654f'],dirt:['#8e8070','#7c6d60','#a0917e','#6f665b']};const p=palettes[kind]||palettes.stone;ctx.fillStyle=p[0];ctx.fillRect(0,0,32,32);for(let i=0;i<190;i++){ctx.fillStyle=p[Math.floor(rand()*4)];let x=Math.floor(rand()*16)*2,y=Math.floor(rand()*16)*2;ctx.fillRect(x,y,kind==='bark'?2:2+Math.floor(rand()*2)*2,kind==='bark'?4+rand()*10:2);}if(kind==='plank'){ctx.fillStyle='#695d4e';for(let y=0;y<32;y+=8){ctx.fillRect(0,y,32,1);ctx.fillRect((y*3)%29,y,1,8);}}if(kind==='stone'){ctx.fillStyle='#657570';ctx.fillRect(2,14,11,1);ctx.fillRect(12,14,1,7);ctx.fillRect(22,2,1,8);}const t=new THREE.CanvasTexture(c);t.magFilter=THREE.NearestFilter;t.minFilter=THREE.NearestMipmapLinearFilter;t.colorSpace=THREE.SRGBColorSpace;return t;}
@@ -21,13 +23,13 @@ function groundHeight(x,z){if(z>5&&z<11)return-.8;if(Math.abs(x)<9&&z>-46&&z<24)
 // True textured voxel terrain with distinct soil sides and grass caps.
 const terrainMaterial=[mat(0xabb397,'dirt'),mat(0xabb397,'dirt'),mat(0xabc49c,'grass'),mat(0x8c9c82,'dirt'),mat(0xabb397,'dirt'),mat(0xabb397,'dirt')];
 const terrain=new THREE.InstancedMesh(cube,terrainMaterial,8000),dummy=new THREE.Object3D(),color=new THREE.Color();let index=0;
-for(let x=-45;x<45;x+=1.5)for(let z=-57;z<42;z+=1.5){const h=groundHeight(x,z),height=h+2;dummy.position.set(x,h-height/2-.08,z);dummy.scale.set(1.5,height,1.5);dummy.updateMatrix();terrain.setMatrixAt(index,dummy.matrix);color.setHSL(.25+rand()*.035,.12+rand()*.08,.77+rand()*.12);terrain.setColorAt(index++,color);}
+for(let x=-45;x<45;x+=1.5)for(let z=-57;z<42;z+=1.5){const h=groundHeight(x,z),height=h+2;dummy.position.set(x,h-height/2-.08,z);dummy.scale.set(1.5,height,1.5);dummy.updateMatrix();terrain.setMatrixAt(index,dummy.matrix);color.setHSL(forest.grassHue+rand()*.035,.12+rand()*.08,.77+rand()*.12);terrain.setColorAt(index++,color);}
 terrain.count=index;terrain.receiveShadow=true;scene.add(terrain);
 // Small stone path, with a hand-built bridge over the stream.
 for(let z=-44;z<24;z+=.85){if(z>4&&z<12)continue;for(let a=-1;a<=1;a++){const x=a*.72+Math.sin(z*.1)*.4;if(rand()>.17)box(staticWorld,x,.025,z,.66+rand()*.12,.07,.62+rand()*.13,rand()>.5?0xc2c2ac:0xa5b1a1,'stone');}}
 for(let z=4;z<=12;z+=.47)box(staticWorld,0,.12,z,3.25,.24,.43,0xc5a77d,'plank');
 for(const x of [-1.7,1.7]){box(staticWorld,x,.72,8,.13,.14,8.8,0xa88a62,'bark');for(const z of [4,6,8,10,12]){box(staticWorld,x,.29,z,.22,1.65,.22,0x9a8063,'bark');box(staticWorld,x,1.15,z,.32,.13,.32,0xd2bb91,'plank');}}
-const skyUniform={top:{value:new THREE.Color(0x263854)},horizon:{value:new THREE.Color(0xe1a886)},night:{value:0}};
+const skyUniform={top:{value:new THREE.Color(forest.top)},horizon:{value:new THREE.Color(forest.horizon)},night:{value:0}};
 const sky=new THREE.Mesh(new THREE.SphereGeometry(140,32,20),new THREE.ShaderMaterial({side:THREE.BackSide,depthWrite:false,uniforms:skyUniform,vertexShader:'varying vec3 vWorld;void main(){vWorld=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',fragmentShader:'uniform vec3 top;uniform vec3 horizon;uniform float night;varying vec3 vWorld;void main(){vec3 d=normalize(vWorld);float h=smoothstep(-.05,.65,d.y);vec3 c=mix(horizon,top,h);float glow=pow(max(0.,dot(d,normalize(vec3(-.48,.2,-1.)))),22.);c+=vec3(.4,.17,.04)*glow*(1.-night);gl_FragColor=vec4(c,1.);\n#include <tonemapping_fragment>\n#include <colorspace_fragment>\n}'}));sky.renderOrder=-10;scene.add(sky);
 function glowTexture(){const c=document.createElement('canvas');c.width=c.height=128;const ctx=c.getContext('2d'),g=ctx.createRadialGradient(64,64,0,64,64,64);g.addColorStop(0,'rgba(255,255,255,1)');g.addColorStop(.1,'rgba(255,255,255,.65)');g.addColorStop(.35,'rgba(255,255,255,.15)');g.addColorStop(1,'rgba(255,255,255,0)');ctx.fillStyle=g;ctx.fillRect(0,0,128,128);return new THREE.CanvasTexture(c);}
 const glowMap=glowTexture();function glow(parent,x,y,z,size,tint,opacity=.7){const m=new THREE.Sprite(new THREE.SpriteMaterial({map:glowMap,color:tint,transparent:true,opacity,blending:THREE.AdditiveBlending,depthWrite:false}));m.position.set(x,y,z);m.scale.set(size,size,1);parent.add(m);return m;}
@@ -38,7 +40,7 @@ for(let i=0;i<55;i++){const a=i/55*Math.PI*2,r=67+rand()*12,h=5+rand()*12;box(st
 const waterUniforms={time:{value:0},night:{value:0}};const water=new THREE.Mesh(new THREE.PlaneGeometry(100,6,1,1),new THREE.ShaderMaterial({uniforms:waterUniforms,transparent:true,vertexShader:'varying vec2 v;void main(){v=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',fragmentShader:'varying vec2 v;uniform float time;uniform float night;void main(){float wave=sin(v.y*120.+time*.7+sin(v.x*35.+time*.2)*2.)*.5+.5;float fine=sin(v.y*340.-time*.5+v.x*50.)*.5+.5;vec3 c=mix(vec3(.11,.23,.28),vec3(.25,.39,.42),wave*.25+fine*.08);float ribbon=exp(-pow((v.x-.32+sin(v.y*29.+time*.6)*.008)*17.,2.))*pow(wave,18.)*(.3+v.y*.4);c+=vec3(.8,.52,.25)*ribbon;c=mix(c,c*vec3(.7,.85,1.1),night);gl_FragColor=vec4(c,.96);\n#include <tonemapping_fragment>\n#include <colorspace_fragment>\n}'}));water.rotation.x=-Math.PI/2;water.position.set(0,-.28,8);scene.add(water);
 for(let i=0;i<120;i++){const x=-38+rand()*76,z=rand()>.5?4.7:11.3;if(Math.abs(x)<2.5)continue;const h=.15+rand()*.4;box(staticWorld,x,h/2-.12,z,.35+rand()*.7,h,.3+rand()*.55,0x9aaba0,'stone');if(i%3===0){box(staticWorld,x+.2,.38,z,.035,.8,.035,0xb4ad7b);box(staticWorld,x+.24,.85,z,.08,.22,.08,0xc4b384);}}
 // Layered, irregular foliage and living ground cover instead of identical tree cones.
-const trunks=[];function pine(x,z,scale=1){const y=groundHeight(x,z),g=new THREE.Group();g.position.set(x,y,z);const h=(6+rand()*4)*scale;box(g,0,h*.43,0,.48*scale,h*.86,.48*scale,0xa59177,'bark');for(let layer=0;layer<6;layer++){const w=(3.8-layer*.48)*scale,ly=h*.33+layer*.85*scale;box(g,0,ly,0,w,1.1*scale,w,0x739c8d+layer*0x030201,'leaf');for(let q=0;q<3;q++){const a=rand()*Math.PI*2;box(g,Math.cos(a)*w*.37,ly-.3,Math.sin(a)*w*.37,w*.4,.6*scale,w*.4,0x7c9e8a,'leaf');}}box(g,0,h*.33+5.5*scale,0,.5*scale,.8*scale,.5*scale,0xa4b195,'leaf');staticWorld.add(g);trunks.push({x,z,r:.55*scale});}
+const trunks=[];function pine(x,z,scale=1){const y=groundHeight(x,z),g=new THREE.Group();g.position.set(x,y,z);const h=(6+rand()*4)*scale;box(g,0,h*.43,0,.48*scale,h*.86,.48*scale,0xa59177,'bark');for(let layer=0;layer<6;layer++){const w=(3.8-layer*.48)*scale,ly=h*.33+layer*.85*scale;box(g,0,ly,0,w,1.1*scale,w,new THREE.Color(forest.leaf).offsetHSL(0,0,layer*.014).getHex(),'leaf');for(let q=0;q<3;q++){const a=rand()*Math.PI*2;box(g,Math.cos(a)*w*.37,ly-.3,Math.sin(a)*w*.37,w*.4,.6*scale,w*.4,forest.leaf,'leaf');}}box(g,0,h*.33+5.5*scale,0,.5*scale,.8*scale,.5*scale,new THREE.Color(forest.leaf).offsetHSL(0,0,.12).getHex(),'leaf');staticWorld.add(g);trunks.push({x,z,r:.55*scale});}
 for(let i=0;i<165;i++){const x=-42+rand()*84,z=-53+rand()*88;if(Math.abs(x)<8.5)continue;if(z>3&&z<13)continue;pine(x,z,.8+rand()*.7);}
 // The trees nearest the player frame the clearing like a doorway.
 for(const [x,z,s] of [[-7,17,1.5],[8,15,1.4],[-10,-2,1.7],[10,-7,1.5],[-9,-30,1.4],[9,-33,1.5]])pine(x,z,s);
@@ -63,7 +65,7 @@ const coreHit=new THREE.Mesh(new THREE.BoxGeometry(3.2,3,3.2),new THREE.MeshBasi
 // Batch the entire textured environment by material, keeping thousands of cubes economical.
 scene.updateMatrixWorld(true);const batches=new Map();staticWorld.traverse(m=>{if(!m.isMesh)return;const key=m.material.uuid;if(!batches.has(key))batches.set(key,{material:m.material,list:[]});batches.get(key).list.push(m);});for(const {material,list}of batches.values()){const b=new THREE.InstancedMesh(cube,material,list.length);list.forEach((m,i)=>b.setMatrixAt(i,m.matrixWorld));b.castShadow=!material.emissiveIntensity;b.receiveShadow=true;scene.add(b);}scene.remove(staticWorld);
 // Airborne motes catch the last light; they become fireflies after dark.
-const motesGeo=new THREE.BufferGeometry(),motesArray=new Float32Array(260*3);for(let i=0;i<260;i++){motesArray[i*3]=-18+rand()*36;motesArray[i*3+1]=.3+rand()*7;motesArray[i*3+2]=-36+rand()*58;}motesGeo.setAttribute('position',new THREE.BufferAttribute(motesArray,3));const motes=new THREE.Points(motesGeo,new THREE.PointsMaterial({map:glowMap,color:0xffdca0,size:.13,transparent:true,opacity:.7,depthWrite:false,blending:THREE.AdditiveBlending}));scene.add(motes);
+const motesGeo=new THREE.BufferGeometry(),motesArray=new Float32Array(260*3);for(let i=0;i<260;i++){motesArray[i*3]=-18+rand()*36;motesArray[i*3+1]=.3+rand()*7;motesArray[i*3+2]=-36+rand()*58;}motesGeo.setAttribute('position',new THREE.BufferAttribute(motesArray,3));const motes=new THREE.Points(motesGeo,new THREE.PointsMaterial({map:glowMap,color:forest.mote,size:.13,transparent:true,opacity:.7,depthWrite:false,blending:THREE.AdditiveBlending}));scene.add(motes);
 const lightShaft=new THREE.Mesh(new THREE.ConeGeometry(2.6,14,4,1,true),new THREE.MeshBasicMaterial({color:0xffdba9,transparent:true,opacity:.018,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide}));lightShaft.position.set(-7,7,-16);lightShaft.rotation.z=-.32;scene.add(lightShaft);
 // A visible hand and the small seed it carries anchor the camera in the world.
 const hand=new THREE.Group();hand.scale.setScalar(.72);hand.position.set(.1,-.1,-.18);camera.add(hand);scene.add(camera);box(hand,.44,-.42,-.7,.18,.32,.2,0x8d6b50,'plank');box(hand,.43,-.25,-.66,.2,.2,.23,0xe0b38e);const held=box(hand,.43,-.1,-.67,.18,.18,.18,0xffdba0,'',1.6);held.rotation.set(.4,.5,.6);glow(hand,.43,-.1,-.67,.7,0xf4c380,.2);hand.visible=false;hand.traverse(m=>m.castShadow=false);
@@ -71,7 +73,7 @@ const hand=new THREE.Group();hand.scale.setScalar(.72);hand.position.set(.1,-.1,
 let audio,master,ambience,noiseBuffer,muted=false,delay,reverb,windFilter;
 function initAudio(){if(audio){audio.resume();return;}audio=new(window.AudioContext||window.webkitAudioContext)();master=audio.createGain();master.gain.value=.5;const compressor=audio.createDynamicsCompressor();compressor.threshold.value=-18;compressor.ratio.value=4;master.connect(compressor);compressor.connect(audio.destination);delay=audio.createDelay(1);delay.delayTime.value=.32;const feedback=audio.createGain();feedback.gain.value=.23;const wet=audio.createGain();wet.gain.value=.18;delay.connect(feedback);feedback.connect(delay);delay.connect(wet);wet.connect(master);const impulse=audio.createBuffer(2,audio.sampleRate*2.4,audio.sampleRate);for(let c=0;c<2;c++){const d=impulse.getChannelData(c);for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,3);}reverb=audio.createConvolver();reverb.buffer=impulse;const room=audio.createGain();room.gain.value=.17;reverb.connect(room);room.connect(master);noiseBuffer=audio.createBuffer(1,audio.sampleRate*3,audio.sampleRate);const d=noiseBuffer.getChannelData(0);let previous=0;for(let i=0;i<d.length;i++){previous=(previous+.022*(Math.random()*2-1))/1.022;d[i]=previous*3.5;}const wind=audio.createBufferSource();wind.buffer=noiseBuffer;wind.loop=true;windFilter=audio.createBiquadFilter();windFilter.type='lowpass';windFilter.frequency.value=500;ambience=audio.createGain();ambience.gain.value=.28;wind.connect(windFilter);windFilter.connect(ambience);ambience.connect(master);wind.start();}
 function tone(freq,duration=.9,volume=.2,pan=0,kind='sine'){if(!audio)return;const now=audio.currentTime,osc=audio.createOscillator(),g=audio.createGain(),p=audio.createStereoPanner();osc.type=kind;osc.frequency.value=freq;g.gain.setValueAtTime(0,now);g.gain.linearRampToValueAtTime(volume,now+.008);g.gain.exponentialRampToValueAtTime(.001,now+duration);osc.connect(g);g.connect(p);p.pan.value=clamp(pan,-.9,.9);p.connect(master);p.connect(delay);p.connect(reverb);osc.start(now);osc.stop(now+duration+.05);}
-const keyShift=[1,9/8,4/3][Math.floor(Math.random()*3)];
+const keyShift=forest.pitch;
 const frequencies=[293.66,349.23,392,440,523.25,587.33,440,349.23].map(f=>f*keyShift);
 function note(pad,accent=1){const relative=new THREE.Vector3(pad.x,1,pad.z).sub(camera.position).applyQuaternion(camera.quaternion.clone().invert());const pan=clamp(relative.x/10,-.8,.8),distance=camera.position.distanceTo(new THREE.Vector3(pad.x,1,pad.z));const vol=clamp(1-distance/45,.25,1)*.16*accent;tone(frequencies[pad.index],1.3,vol,pan);tone(frequencies[pad.index]*2,.35,vol*.25,pan);}
 function stepSound(){if(!audio)return;const now=audio.currentTime,n=audio.createBufferSource();n.buffer=noiseBuffer;const f=audio.createBiquadFilter(),g=audio.createGain();f.type='lowpass';f.frequency.value=player.z>4&&player.z<12?950:500;g.gain.setValueAtTime(.48,now);g.gain.exponentialRampToValueAtTime(.001,now+.11);n.connect(f);f.connect(g);g.connect(master);n.start(now,Math.random());n.stop(now+.13);tone(player.z>4&&player.z<12?95:65,.09,.07,0,'triangle');}
@@ -95,18 +97,24 @@ function wake(){if(awakened){say('它在轻轻跳动。只要旋律还在，它�
 const effects=[],enemies=[];
 function burst(pos,tint,count=8){for(let i=0;i<count;i++){const m=box(scene,pos.x,pos.y,pos.z,.055,.055,.055,tint,'',1.7);effects.push({mesh:m,life:.7,max:.7,velocity:new THREE.Vector3((rand()-.5)*2,rand()*2+.5,(rand()-.5)*2),shared:true});}}
 function trail(from,to,tint){const delta=new THREE.Vector3().subVectors(to,from);const m=new THREE.Mesh(new THREE.BoxGeometry(.025,.025,delta.length()),new THREE.MeshBasicMaterial({color:tint,transparent:true,opacity:.8}));m.position.copy(from).add(to).multiplyScalar(.5);m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),delta.normalize());scene.add(m);effects.push({mesh:m,life:.16,max:.16});}
-function pulseRing(pos){const geo=new THREE.RingGeometry(.5,.53,32);geo.rotateX(-Math.PI/2);const m=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color:0xffd69b,transparent:true,opacity:.6,side:THREE.DoubleSide,depthWrite:false}));m.position.copy(pos);m.position.y=.36;scene.add(m);effects.push({mesh:m,life:1,max:1,ring:true});}
+function pulseRing(pos,tint=0xffd69b){const geo=new THREE.RingGeometry(.5,.53,32);geo.rotateX(-Math.PI/2);const m=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color:tint,transparent:true,opacity:.6,side:THREE.DoubleSide,depthWrite:false}));m.position.copy(pos);m.position.y=.36;scene.add(m);effects.push({mesh:m,life:1,max:1,ring:true});}
 function attack(pad){
   pad.pulse=1;note(pad);
   const stats=towerStats(pad.level);
   if(pad.level>1)tone(frequencies[pad.index]*.5,.6,.035);
   const list=enemies.filter(e=>e.hp>0&&e.mesh.position.distanceTo(new THREE.Vector3(pad.x,0,pad.z))<stats.range).sort((a,b)=>b.mesh.position.z-a.mesh.position.z);
   if(!list.length)return;
-  const e=list[0],damage=Math.min(e.hp,stats.damage);e.hp-=stats.damage;e.hit=.16;e.slow=.35;
+  const e=list[0];
   trail(new THREE.Vector3(pad.x,1.7,pad.z),e.mesh.position.clone().add(new THREE.Vector3(0,.6,0)),pad.level===3?0xffd69b:0xc9e6ce);
-  floatText('−'+damage,e.mesh.position.clone().add(new THREE.Vector3(0,1.6,0)));
+  damageEnemy(e,stats.damage);
+}
+function damageEnemy(e,amount,prefix='−'){
+  const hit=applyDamage(e.hp,amount);if(!hit.applied)return false;
+  e.hp=hit.hp;e.hit=.16;e.slow=.35;
+  floatText(prefix+hit.applied,e.mesh.position.clone().add(new THREE.Vector3(0,1.6,0)));
   burst(e.mesh.position.clone().add(new THREE.Vector3(0,.6,0)),0xd3ddba,3);
-  if(e.hp<=0){
+  if(hit.killed){
+    e.assist.hidden=true;
     const chain=comboAfterKill(state.combo,state.comboAt,state.time);
     state.combo=chain.count;state.comboAt=state.time;state.multiplier=chain.multiplier;state.maxCombo=Math.max(state.maxCombo,chain.count);
     state.kills++;state.points+=Math.round(e.points*chain.multiplier);
@@ -116,6 +124,22 @@ function attack(pad){
     $('#combo-hud').classList.remove('popped');void $('#combo-hud').offsetWidth;$('#combo-hud').classList.add('popped');
     burst(e.mesh.position.clone().add(new THREE.Vector3(0,.7,0)),0xeec895,12);
   }
+  return true;
+}
+const assistGeometry=new THREE.BoxGeometry(1.3,1.7,1.4),assistMaterial=new THREE.MeshBasicMaterial({visible:false});
+function supportEnemy(e){
+  if(!state.started||state.paused||state.ended||!state.fighting||e.hp<=0)return;
+  const shot=planSupport(state.time,state.supportReadyAt,beatTimer);if(!shot.allowed)return;
+  state.supportReadyAt=shot.readyAt;state.supportHits++;if(shot.perfect){state.perfectHits++;state.points+=5;}
+  const tint=shot.perfect?0xffd493:0xbadfd9,impact=e.mesh.position.clone().add(new THREE.Vector3(0,.7,0));
+  trail(viewMode==='first'?camera.position.clone().add(new THREE.Vector3(.2,-.2,-.2)):new THREE.Vector3(0,2,-4.8),impact,tint);
+  pulseRing(e.mesh.position,tint);burst(impact,tint,8);plantKick=.8;
+  tone(frequencies[(state.supportHits+2)%8],.65,.13,0,'triangle');if(shot.perfect)tone(frequencies[(state.supportHits+2)%8]*2,.4,.06);
+  damageEnemy(e,shot.damage,shot.perfect?'合拍 −':'♪ −');
+}
+function enemyAt(x,y){
+  raycaster.setFromCamera(new THREE.Vector2(x/innerWidth*2-1,-y/innerHeight*2+1),camera);
+  return raycaster.intersectObjects(enemies.filter(e=>e.hp>0).map(e=>e.hitbox),false)[0]?.object.userData.enemy||null;
 }
 
 const beats=[5,1,3,7,4,0,2,6];
@@ -128,7 +152,7 @@ function musicalBeat(){
 }
 
 let spawned=0,spawnTimer=0,waveElapsed=0,waveEscapesAtStart=0,waveKillsAtStart=0,rewardUntil=0;const nightNames=['第一夜 · 风停了','第二夜 · 林子深处','最后一夜 · 天亮之前'];
-function startNight(){if(state.fighting||state.ended||state.wave>=WAVES.length)return;nextNightTimer=0;prepTimer=0;state.wave++;state.combo=0;state.multiplier=1;state.comboAt=-999;waveEscapesAtStart=state.escaped;waveKillsAtStart=state.kills;$('#wave-reward').hidden=true;state.fighting=true;phase=2;spawned=0;spawnTimer=0;waveElapsed=0;$('#chapter').textContent=nightNames[state.wave-1];$('#chapter-sub').textContent='守住这颗心，直到天亮';objective(4,'有东西正穿过森林','音石会随旋律驱散暗影。寻找还没点亮的石台。');say(state.wave===1?'风停了。可你的旋律，没有停。':state.wave===2?'黑暗又近了一些。把剩下的光种下吧。':'再坚持一会儿。山那边，快有光了。',6);}
+function startNight(){if(state.fighting||state.ended||state.wave>=WAVES.length)return;nextNightTimer=0;prepTimer=0;state.wave++;state.combo=0;state.multiplier=1;state.comboAt=-999;waveEscapesAtStart=state.escaped;waveKillsAtStart=state.kills;$('#wave-reward').hidden=true;state.fighting=true;phase=2;spawned=0;spawnTimer=0;waveElapsed=0;$('#chapter').textContent=nightNames[state.wave-1];$('#chapter-sub').textContent=forest.name+' · 点暗影可以支援';objective(4,'有东西正穿过森林','音石会随旋律驱散暗影。寻找还没点亮的石台。');say(state.wave===1?'风停了。可你的旋律，没有停。':state.wave===2?'黑暗又近了一些。把剩下的光种下吧。':'再坚持一会儿。山那边，快有光了。',6);}
 function spawn(){
   const type=WAVES[state.wave-1].enemies[spawned],spec=ENEMY_TYPES[type],g=new THREE.Group();
   const body=box(g,0,.55,0,.55,.55,.85,spec.color,'stone');body.material=body.material.clone();
@@ -139,14 +163,18 @@ function spawn(){
   box(g,0,.68,-.55,.17,.16,type==='runner'?.75:.45,spec.color,'stone');
   if(type==='brute'||type==='boss'){box(g,0,.78,-.05,.75,.25,.9,0x8d839b,'stone');box(g,0,1.06,-.2,.35,.2,.55,0xa99fb0,'stone');}
   if(type==='boss'){for(const x of [-.25,0,.25])box(g,x,1.27,.38,.12,.22,.15,0xffd19a,'',1.1);say('最后的巨影来了！点音塔升级，一起放大声音。',4);}
+  if(state.wave===1&&spawned===0)say('点一下暗影，弹个音帮帮音塔！',4);
   g.scale.setScalar(spec.scale);g.position.set((rand()-.5)*1.2,0,-38);scene.add(g);
   const bar=new THREE.Group();bar.position.y=1.65;
   const bg=new THREE.Mesh(new THREE.PlaneGeometry(.9,.07),new THREE.MeshBasicMaterial({color:0x203132,depthTest:false}));bar.add(bg);
   const hpFill=new THREE.Mesh(new THREE.PlaneGeometry(.86,.04),new THREE.MeshBasicMaterial({color:type==='brute'?0xc6aed8:type==='runner'?0xe7bc85:0xb4d2b4,depthTest:false}));hpFill.position.z=.01;bar.add(hpFill);g.add(bar);
-  enemies.push({mesh:g,bar,hpFill,body,type,points:spec.points,baseScale:spec.scale,maxHp:spec.hp,hp:spec.hp,speed:spec.speed,legs,offset:rand()*10,hit:0,slow:0});spawned++;
+  const enemy={mesh:g,bar,hpFill,body,type,points:spec.points,baseScale:spec.scale,maxHp:spec.hp,hp:spec.hp,speed:spec.speed,legs,offset:rand()*10,hit:0,slow:0};
+  const hitbox=new THREE.Mesh(assistGeometry,assistMaterial);hitbox.position.y=.8;hitbox.userData.enemy=enemy;g.add(hitbox);enemy.hitbox=hitbox;
+  const assist=document.createElement('button');assist.className='support-target';assist.setAttribute('aria-label','弹奏支援：'+spec.name);assist.title='点一下，弹奏支援';assist.onclick=()=>supportEnemy(enemy);$('#enemy-targets').appendChild(assist);enemy.assist=assist;
+  enemies.push(enemy);spawned++;
 }
 function removeEnemy(enemy){
-  scene.remove(enemy.mesh);enemy.body.material.dispose();
+  scene.remove(enemy.mesh);enemy.assist.remove();enemy.body.material.dispose();
   for(const mesh of enemy.bar.children){mesh.geometry.dispose();mesh.material.dispose();}
 }
 
@@ -169,14 +197,14 @@ function finish(won){
   if(state.ended)return;
   state.ended=true;state.won=won;state.fighting=false;phase=won?3:2;keys.clear();document.exitPointerLock?.();clearSelection();
   const result=resultFor({won,health:state.health,points:state.points,kills:state.kills,duration:state.time,escaped:state.escaped,maxCombo:state.maxCombo});
-  let best=0;try{best=Number(localStorage.getItem('echo.best-score.v5')||0);if(!Number.isFinite(best))best=0;if(won&&result.score>best){best=result.score;localStorage.setItem('echo.best-score.v5',String(best));}}catch{}
+  let best=0;try{best=Number(localStorage.getItem('echo.best-score.v6.'+forest.id)||0);if(!Number.isFinite(best))best=0;if(won&&result.score>best){best=result.score;localStorage.setItem('echo.best-score.v6.'+forest.id,String(best));}}catch{}
   $('#ending-title').innerHTML=won?'天亮了。<br>你的歌，还在林间。':'风吹散了最后的微光。';
   $('#ending-tag').textContent=won?'THE WOODS REMEMBER':'THE WOODS WILL WAIT';
   $('#ending-stars').innerHTML=Array.from({length:3},(_,i)=>`<span class="${i>=result.stars?'dim':''}">★</span>`).join('');
   $('#ending-stars').setAttribute('aria-label',won?result.stars+' 星守护':'守护未完成');
-  $('#ending-description').textContent=won?'你守住了三波暗影。林间之心记住了这首歌。':'试着把前排音塔升到 II 级。疾影跑得快，重影更耐打，别忘了补强后方防线。';
+  $('#ending-description').textContent=won?'你守住了'+forest.name+'。下一次，去'+nextForest.name+'听听新的旋律。':'下次试着点一下暗影，弹奏支援。也可以再升级前排音塔。';$('#again').textContent='去'+nextForest.name+'，再来一局 ↗';
   $('#ending-stats').innerHTML=`<div><b>${result.score}</b><span>守护得分</span></div><div><b>${result.kills} / ${TOTAL_ENEMIES}</b><span>驱散暗影</span></div><div><b>${result.health} / 6</b><span>核心完整</span></div>`;
-  $('#best-score').textContent='最高 '+state.maxCombo+' 连奏 · 用时 '+clockText(result.duration)+' · 本机最佳 '+best+' 分';
+  $('#best-score').textContent='最高 '+state.maxCombo+' 连奏 · 合拍 '+state.perfectHits+' 次 · 用时 '+clockText(result.duration)+' · 本林最佳 '+best+' 分';
   setTimeout(()=>$('#ending').showModal(),won?1800:900);
   if(won){tone(frequencies[0],2,.12);tone(frequencies[2],2,.07);tone(frequencies[4],2,.08);}$('#wave-reward').hidden=true;
   say(won?'三波已守住。听，鸟儿醒了。':'核心已失守。下一次，让前排的声音更有力量。',6);
@@ -184,7 +212,7 @@ function finish(won){
 
 // First-person movement has weight, a breathing idle, and a bridge you can actually cross.
 const player=new THREE.Vector3(0,1.72,1.5),keys=new Set();let yaw=0,pitch=-.02,targetYaw=0,targetPitch=-.02,drag=null,dragMoved=false,lastPointer=null,footDistance=0,motion=0,walkPhase=0;
-function start(){if(state.started)return;state.started=true;$('#intro').classList.add('dismissed');$('#intro').inert=true;$('#hud').hidden=false;initAudio();wake();setView('overview',false);say('点亮这三个金色位置。放心，准备好才开打。',4);updateHUD();renderer.domElement.focus();}
+function start(){if(state.started)return;state.started=true;try{localStorage.setItem('echo.round.v6',String(roundNumber+1));}catch{}$('#intro').classList.add('dismissed');$('#intro').inert=true;$('#hud').hidden=false;initAudio();wake();setView('overview',false);say('点亮这三个金色位置。放心，准备好才开打。',4);updateHUD();renderer.domElement.focus();}
 
 renderer.domElement.tabIndex=0;renderer.domElement.style.outline='none';
 function blocked(x,z){if(Math.abs(x)>14||z>23||z<-35)return true;if(z>4.5&&z<11.5&&Math.abs(x)>1.35)return true;if(Math.hypot(x,z+4.8)<1.65)return true;for(const p of pads)if(Math.hypot(x-p.x,z-p.z)<.95)return true;return trunks.some(t=>Math.hypot(x-t.x,z-t.z)<t.r+.22);}
@@ -195,7 +223,7 @@ function updateInteraction(){focused=targetAt();if(!focused){let nearest=3.3;for
 function interact(object=focused){if(!state.started||state.paused||state.ended||!object)return;if(object.userData.core)wake();else activate(pads[object.userData.pad]);}
 renderer.domElement.addEventListener('pointerdown',e=>{if(e.button!==0||!state.started||state.paused)return;drag={x:e.clientX,y:e.clientY};dragMoved=false;lastPointer={x:e.clientX,y:e.clientY};renderer.domElement.setPointerCapture(e.pointerId);});
 renderer.domElement.addEventListener('pointermove',e=>{if(!state.started||state.paused)return;const locked=document.pointerLockElement===renderer.domElement;if(viewMode==='overview'){if(drag){const dx=e.clientX-lastPointer.x,dy=e.clientY-lastPointer.y;if(Math.abs(e.clientX-drag.x)+Math.abs(e.clientY-drag.y)>5)dragMoved=true;orbitYaw-=dx*.004;orbitPitch=clamp(orbitPitch+dy*.003,.55,1.35);lastPointer={x:e.clientX,y:e.clientY};}return;}if(locked||drag){const dx=locked?e.movementX:e.clientX-lastPointer.x,dy=locked?e.movementY:e.clientY-lastPointer.y;if(drag&&Math.abs(e.clientX-drag.x)+Math.abs(e.clientY-drag.y)>5)dragMoved=true;targetYaw-=dx*.0025;targetPitch=clamp(targetPitch-dy*.0022,-1.25,1.15);lastPointer={x:e.clientX,y:e.clientY};}});
-renderer.domElement.addEventListener('pointerup',e=>{if(drag&&!dragMoved){const picked=targetAt(e.clientX,e.clientY)||(viewMode==='first'?focused:null);if(picked)interact(picked);else if(viewMode==='overview')clearSelection();}drag=null;});renderer.domElement.addEventListener('pointercancel',()=>drag=null);renderer.domElement.addEventListener('dblclick',()=>{if(viewMode==='first'&&state.started&&!state.paused)renderer.domElement.requestPointerLock?.()?.catch(()=>say('按住鼠标拖动，也能环视森林。',3));});renderer.domElement.addEventListener('contextmenu',e=>e.preventDefault());
+renderer.domElement.addEventListener('pointerup',e=>{if(drag&&!dragMoved){const picked=targetAt(e.clientX,e.clientY)||(viewMode==='first'?focused:null);const enemy=enemyAt(e.clientX,e.clientY);if(enemy)supportEnemy(enemy);else if(picked)interact(picked);else if(viewMode==='overview')clearSelection();}drag=null;});renderer.domElement.addEventListener('pointercancel',()=>drag=null);renderer.domElement.addEventListener('dblclick',e=>{if(viewMode==='first'&&state.started&&!state.paused&&!enemyAt(e.clientX,e.clientY))renderer.domElement.requestPointerLock?.()?.catch(()=>say('按住鼠标拖动，也能环视森林。',3));});renderer.domElement.addEventListener('contextmenu',e=>e.preventDefault());
 renderer.domElement.addEventListener('wheel',e=>{if(viewMode==='overview'&&state.started){e.preventDefault();orbitDistance=clamp(orbitDistance+e.deltaY*.025,28,65);}},{passive:false});
 
 function pause(){if(!state.started||state.ended)return;state.paused=true;keys.clear();document.exitPointerLock?.();document.body.classList.add('paused');$('#pause-dialog').showModal();if(audio)master.gain.setTargetAtTime(0,audio.currentTime,.15);}
@@ -236,7 +264,7 @@ function updateBuildGuide(){
   document.querySelectorAll('#build-slots i').forEach((el,i)=>el.classList.toggle('done',i<state.planted));
   if(state.ended)return;
   if(initial)objective(1,'点亮三个音塔','准备好才开打，不用赶时间。');
-  else if(state.fighting)objective(2,state.wave===3?'最后一波，放大声音！':'一边打怪，一边变强','点金色箭头升级，连奏会自动送回响。');
+  else if(state.fighting)objective(2,state.wave===3?'最后一波，放大声音！':'一边打怪，一边变强','点暗影可以支援，点金色箭头可以升级。');
   else objective(3,state.wave===0?'准备好了，马上开打':'奖励到账，升一级！','再点已有音塔，就能升级。');
 }
 
@@ -290,6 +318,18 @@ function upgradeSelected(){
 }
 $('#upgrade-tower').onclick=upgradeSelected;$('#clear-selection').onclick=clearSelection;
 function updateJuice(){
+  const ready=state.time>=state.supportReadyAt;
+  $('#support-meter').hidden=!state.fighting||state.ended;
+  $('#support-ready').style.width=clamp((1-(state.supportReadyAt-state.time)/SUPPORT_COOLDOWN)*100,0,100)+'%';
+  const hint=state.fighting&&!state.ended?(ready?'♪ 点暗影，弹奏支援':'♪ 余音回响…'):'林间合奏';
+  if($('#music-action').textContent!==hint)$('#music-action').textContent=hint;
+  for(const e of enemies){
+    const projected=e.mesh.position.clone().add(new THREE.Vector3(0,.8*e.baseScale,0)).project(camera);
+    e.assist.hidden=e.hp<=0||state.ended||projected.z>1||projected.z< -1||Math.abs(projected.x)>1||Math.abs(projected.y)>1;
+    e.assist.style.left=(projected.x*.5+.5)*innerWidth+'px';e.assist.style.top=(-projected.y*.5+.5)*innerHeight+'px';
+    e.assist.classList.toggle('cooling',!ready);e.assist.classList.toggle('teaching',state.wave===1&&waveElapsed<5);
+    e.assist.style.setProperty('--target-size',e.type==='boss'?'40px':'29px');
+  }
   const life=COMBO_WINDOW-(state.time-state.comboAt),show=state.combo>=2&&life>0&&!state.ended;
   $('#combo-hud').hidden=!show;
   if(show){$('#combo-count').textContent=state.combo;$('#combo-bonus').textContent='得分 ×'+state.multiplier;$('#combo-life').style.width=clamp(life/COMBO_WINDOW*100,0,100)+'%';}
@@ -297,7 +337,7 @@ function updateJuice(){
   const boss=enemies.find(e=>e.type==='boss'&&e.hp>0);$('#boss-hud').hidden=!boss||state.ended;
   if(boss){$('#boss-number').textContent=Math.max(0,boss.hp)+' / '+boss.maxHp;$('#boss-life').style.width=clamp(boss.hp/boss.maxHp*100,0,100)+'%';}
 }
-let time=0,last=performance.now(),birdTimer=8;const nightFog=new THREE.Color(0x263e51),dayFog=new THREE.Color(0x5d737b),nightTop=new THREE.Color(0x11223d),dayTop=new THREE.Color(0x263854),nightHorizon=new THREE.Color(0x627d87),dayHorizon=new THREE.Color(0xe1a886),dawnTop=new THREE.Color(0x647b8c),dawnHorizon=new THREE.Color(0xffcaaa);
+let time=0,last=performance.now(),birdTimer=8;const nightFog=new THREE.Color(0x263e51),dayFog=new THREE.Color(forest.fog),nightTop=new THREE.Color(0x11223d),dayTop=new THREE.Color(forest.top),nightHorizon=new THREE.Color(0x627d87),dayHorizon=new THREE.Color(forest.horizon),dawnTop=new THREE.Color(0x647b8c),dawnHorizon=new THREE.Color(0xffcaaa);
 function animate(){requestAnimationFrame(animate);const now=performance.now(),dt=Math.min((now-last)/1000,.1);last=now;if(state.paused){renderer.render(scene,camera);return;}time+=dt;if(state.started&&!state.ended)state.time+=dt;
  if(!state.started){camera.position.set(.4+Math.sin(time*.08)*.25,2.0,16.2);camera.rotation.set(-.015,-.055+Math.sin(time*.06)*.02,0,'YXZ');}else if(viewMode==='overview'){
  camera.position.set(overviewTarget.x+Math.sin(orbitYaw)*Math.cos(orbitPitch)*orbitDistance,Math.sin(orbitPitch)*orbitDistance,overviewTarget.z+Math.cos(orbitYaw)*Math.cos(orbitPitch)*orbitDistance);camera.lookAt(overviewTarget);avatar.visible=true;avatar.position.set(player.x,player.y-1.72,player.z);avatar.rotation.y=yaw;hand.visible=false;$('#interaction').hidden=true;
@@ -313,5 +353,6 @@ function animate(){requestAnimationFrame(animate);const now=performance.now(),dt
  for(let i=effects.length-1;i>=0;i--){const e=effects[i];e.life-=dt;if(e.life<=0){scene.remove(e.mesh);if(!e.shared){e.mesh.geometry.dispose();e.mesh.material.dispose();}effects.splice(i,1);continue;}if(e.velocity){e.velocity.y-=dt*2;e.mesh.position.addScaledVector(e.velocity,dt);e.mesh.scale.setScalar(.055*(.5+e.life/e.max*.5));}else if(e.ring){e.mesh.scale.setScalar(1+(1-e.life/e.max)*3);e.mesh.material.opacity=e.life/e.max*.5;}else e.mesh.material.opacity=e.life/e.max*.8;}
  if(state.ended&&phase===3){$('#night-progress i').style.width='100%';$('#chapter').textContent='晨光初现';$('#chapter-sub').textContent='森林记住了你的声音';}renderer.render(scene,camera);if(new URLSearchParams(location.search).has('qa'))document.body.dataset.frame=JSON.stringify({...state,viewMode,prepTimer,nextNightTimer,spawned,awakened,activePads:pads.filter(p=>p.active).length,towerLevels:pads.map(p=>p.level),selectedTower,enemyDetails:enemies.map(e=>({type:e.type,hp:e.hp,z:Number(e.mesh.position.z.toFixed(2))})),enemies:enemies.length,position:player.toArray(),time});}
 addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+document.title='回响原野 · '+forest.name;$('#chapter').textContent=forest.name;$('#chapter-sub').textContent='三下点亮，守过黑夜';$('#intro .eyebrow').innerHTML='<span></span>'+forest.tag;document.body.dataset.forest=forest.id;
 updateHUD();animate();setTimeout(()=>{$('#loading').style.opacity=0;setTimeout(()=>$('#loading').remove(),1000);},250);
 window.resonance={snapshot:()=>({...state,viewMode,prepTimer,nextNightTimer,spawned,awakened,activePads:pads.filter(p=>p.active).length,towerLevels:pads.map(p=>p.level),selectedTower,enemyDetails:enemies.map(e=>({type:e.type,hp:e.hp,z:Number(e.mesh.position.z.toFixed(2))})),enemies:enemies.length,position:player.toArray(),renderCalls:renderer.info.render.calls})};
